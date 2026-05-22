@@ -36,10 +36,25 @@ typedef struct {
 } NextFrameArrowUpdateInfo;
 NextFrameArrowUpdateInfo magic_arrow_info;
 
-RECOMP_CALLBACK("*", recomp_on_init) void on_startup () {
-    magic_arrow_info.type_change_timer = 0;
-    magic_arrow_info.arrow_death_timer = 0;
-}
+typedef struct {
+    ItemId item;
+    u8 slot;
+    bool(*is_available)();
+} CyclingArrowEntry;
+
+typedef void (*ArrowCyclingAddEntryFunc)(CyclingArrowEntry entry);
+
+static bool normal_arrow_is_available() { return INV_CONTENT(ITEM_BOW) == ITEM_BOW; }
+static bool fire_arrow_is_available() { return INV_CONTENT(ITEM_ARROW_FIRE) == ITEM_ARROW_FIRE; }
+static bool ice_arrow_is_available() { return INV_CONTENT(ITEM_ARROW_ICE) == ITEM_ARROW_ICE; }
+static bool light_arrow_is_available() { return INV_CONTENT(ITEM_ARROW_LIGHT) == ITEM_ARROW_LIGHT; }
+
+CyclingArrowEntry cyclingArrows[] = {
+    { ITEM_BOW, SLOT_BOW, normal_arrow_is_available  },
+    { ITEM_BOW_FIRE, SLOT_BOW, fire_arrow_is_available },
+    { ITEM_BOW_ICE, SLOT_BOW, ice_arrow_is_available },
+    { ITEM_BOW_LIGHT, SLOT_BOW, light_arrow_is_available },
+};
 
 extern u8 sMagicArrowCosts[];
 
@@ -156,8 +171,17 @@ bool deferBowMagicAudio = false;
 
 #include "controller.h"
 
-ItemId cyclingArrows[] = { ITEM_BOW, ITEM_BOW_FIRE, ITEM_BOW_ICE, ITEM_BOW_LIGHT };
 int cyclingArrowCount = sizeof(cyclingArrows) / sizeof(cyclingArrows[4]);
+
+#define CYCLING_ARROW_TYPES_MAX 16
+
+void ArrowCycling_AddArrowEntry(CyclingArrowEntry entry) {
+    if(cyclingArrowCount < CYCLING_ARROW_TYPES_MAX) {
+        cyclingArrows[cyclingArrowCount] = entry;
+        cyclingArrowCount++;
+    }
+}
+
 int currentArrowIndex = 0;
 
 u16 sPlayerItemButtons[] = {
@@ -184,8 +208,12 @@ void CycleArrows(Player* this, PlayState* play, Input* input, bool using_r) {
     }
 
     // Update currentArrowIndex based on the currently equipped bow item
+    u8 equippedItem = gSaveContext.save.saveInfo.equips.buttonItems[0][bowButton];
+    u8 equippedSlot = C_SLOT_EQUIP(0, bowButton) & 0xFF;
+
     for (int i = 0; i < cyclingArrowCount; i++) {
-        if (gSaveContext.save.saveInfo.equips.buttonItems[0][bowButton] == cyclingArrows[i]) {
+        if ((cyclingArrows[i].item == equippedItem) &&
+            (cyclingArrows[i].slot == equippedSlot)) {
             currentArrowIndex = i;
             break;
         }
@@ -198,7 +226,7 @@ void CycleArrows(Player* this, PlayState* play, Input* input, bool using_r) {
 
     // Check for shoulder press
     if (CHECK_BTN_ALL(input->press.button, using_r ? BTN_R : BTN_L)) {
-        if ((magic_arrow_info.arrow_death_timer > 0) && (cyclingArrows[currentArrowIndex] != ITEM_BOW)) {
+        if ((magic_arrow_info.arrow_death_timer > 0) && (cyclingArrows[currentArrowIndex].item != ITEM_BOW)) {
             Audio_PlaySfx(NA_SE_SY_ERROR);
             return;
         }
@@ -209,14 +237,13 @@ void CycleArrows(Player* this, PlayState* play, Input* input, bool using_r) {
             if (currentArrowIndex >= cyclingArrowCount) {
                 currentArrowIndex = 0;
             }
-        } while (!((cyclingArrows[currentArrowIndex] == ITEM_BOW && INV_CONTENT(ITEM_BOW) == ITEM_BOW) ||
-                   (cyclingArrows[currentArrowIndex] == ITEM_BOW_FIRE && INV_CONTENT(ITEM_ARROW_FIRE) == ITEM_ARROW_FIRE) ||
-                   (cyclingArrows[currentArrowIndex] == ITEM_BOW_ICE && INV_CONTENT(ITEM_ARROW_ICE) == ITEM_ARROW_ICE) ||
-                   (cyclingArrows[currentArrowIndex] == ITEM_BOW_LIGHT && INV_CONTENT(ITEM_ARROW_LIGHT) == ITEM_ARROW_LIGHT)));
+        } while (!cyclingArrows[currentArrowIndex].is_available());
 
         // Set the current item
-        ItemId currentItem = cyclingArrows[currentArrowIndex];
+        ItemId currentItem = cyclingArrows[currentArrowIndex].item;
+        EquipSlot currentSlot = cyclingArrows[currentArrowIndex].slot;
         gSaveContext.save.saveInfo.equips.buttonItems[0][bowButton] = currentItem;
+        C_SLOT_EQUIP(0, bowButton) = currentSlot;
         Interface_LoadItemIcon(play, bowButton);
 
         // Update held item action
@@ -287,13 +314,13 @@ void CycleArrows(Player* this, PlayState* play, Input* input, bool using_r) {
         }
         
         if (magicArrowIndex >= 0 && magicArrowIndex <= 2) {
-            if (cyclingArrows[currentArrowIndex] != previousBowItem) {
+            if (cyclingArrows[currentArrowIndex].item != previousBowItem) {
             // Play the sound effect for the newly selected magic arrow
             Audio_PlaySfx(NA_SE_SY_SET_FIRE_ARROW + magicArrowIndex);
             }
             deferBowMagicAudio = false;
         } else {
-            if (cyclingArrows[currentArrowIndex] != previousBowItem) {
+            if (cyclingArrows[currentArrowIndex].item != previousBowItem) {
             // Play the sound effect for switching to non-magic arrows
             Audio_PlaySfx(NA_SE_PL_CHANGE_ARMS);
             }
@@ -449,3 +476,11 @@ RECOMP_HOOK("Player_UpdateCommon") void pre_Player_UpdateCommon(Player* this, Pl
     UpdateArrowMagicHandler(this, play);
 }
 
+RECOMP_DECLARE_EVENT(ArrowCycling_RegisterArrowEntries(
+    ArrowCyclingAddEntryFunc add_entry));
+
+RECOMP_CALLBACK("*", recomp_on_init) void on_startup () {
+    magic_arrow_info.type_change_timer = 0;
+    magic_arrow_info.arrow_death_timer = 0;
+    ArrowCycling_RegisterArrowEntries(ArrowCycling_AddArrowEntry);
+}
