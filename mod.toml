@@ -38,6 +38,8 @@ dependencies = [
 #    "modname:1.0.0"
 ]
 
+optional_dependencies = [ "mm_recomp_bomb_arrows" ]
+
 # Native libraries (e.g. DLLs) and the functions they export.
 native_libraries = [
 # Example native library:
